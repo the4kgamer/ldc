@@ -1,39 +1,80 @@
-pool:
-  vmImage: 'vs2017-win2016'
-
-steps:
-- bash: |
-    set -exo pipefail
-    git submodule update --init --recursive
-    curl -L -o libcurl.zip https://dl.dropboxusercontent.com/s/jxwohqax4e2avyt/libcurl-7.48.0-WinSSL-zlib-x86-x64.zip?dl=0
-    mkdir libcurl
-    cd libcurl
-    7z x ../libcurl.zip > /dev/null
-    cd ..
-    mkdir libcurl/ldc2
-    cp libcurl/dmd2/windows/bin64/libcurl.dll libcurl/ldc2
-    cp libcurl/dmd2/windows/lib64/curl.lib libcurl/ldc2
-    curl -L -o ninja.zip https://github.com/ninja-build/ninja/releases/download/v1.8.2/ninja-win.zip
-    mkdir ninja
-    cd ninja
-    7z x ../ninja.zip > /dev/null
-    cd ..
-    curl -L -o ldc2.7z http://github.com/ldc-developers/ldc/releases/download/v1.13.0/ldc2-1.13.0-windows-x64.7z
-    7z x ldc2.7z > /dev/null
-    curl -L -o llvm.7z https://github.com/ldc-developers/llvm/releases/download/ldc-v7.0.1/llvm-7.0.1-windows-x64-clang.7z
-    mkdir llvm
-    cd llvm
-    7z x ../llvm.7z > /dev/null
-    cd ..
-    curl -L -o clang.exe http://releases.llvm.org/7.0.1/LLVM-7.0.1-win64.exe
-  displayName: 'Install prerequisites & blub'
-- pwsh: Start-Process .\clang.exe -ArgumentList '/S' -Wait
-- bash: |
-    export PATH="$PWD/ninja:$PWD/llvm/bin:/C/Program Files/LLVM/bin:$PWD/libcurl/ldc2:$PATH"
-    cmake --version
-    ninja --version
-    clang-cl --version
-    mkdir build
-    cd build
-    cmake -G Ninja -DCMAKE_C_COMPILER:PATH=clang-cl.exe -DCMAKE_CXX_COMPILER:PATH=clang-cl.exe -DCMAKE_BUILD_TYPE=Release -DLLVM_ROOT_DIR=$PWD/../llvm -DD_COMPILER=$PWD/../ldc2-1.13.0-windows-x64/bin/ldmd2 ..
-    ninja -j2
+jobs:
+- job: 'Win64'
+  timeoutInMinutes: 90
+  pool:
+    vmImage: 'vs2017-win2016'
+  steps:
+    - script: git config --global core.autocrlf true
+    - checkout: self
+      submodules: true
+    - script: |
+        echo on
+        :: Download & extract libcurl
+        curl -L -o libcurl.zip https://dl.dropboxusercontent.com/s/jxwohqax4e2avyt/libcurl-7.48.0-WinSSL-zlib-x86-x64.zip?dl=0
+        mkdir libcurl
+        cd libcurl
+        7z x ../libcurl.zip > nul
+        mkdir ldc2
+        cp dmd2/windows/bin64/libcurl.dll ldc2
+        cp dmd2/windows/lib64/curl.lib ldc2
+        cd ..
+        :: Download & extract Ninja
+        curl -L -o ninja.zip https://github.com/ninja-build/ninja/releases/download/v1.8.2/ninja-win.zip
+        mkdir ninja
+        cd ninja
+        7z x ../ninja.zip > nul
+        cd ..
+        :: Install lit
+        python --version
+        python -m pip install lit
+        python -c "import lit; lit.main();" --version
+        :: Download & extract D compiler
+        curl -L -o ldc2.7z http://github.com/ldc-developers/ldc/releases/download/v1.13.0/ldc2-1.13.0-windows-x64.7z
+        7z x ldc2.7z > nul
+        curl -L -o make.7z https://dl.dropboxusercontent.com/s/4y36f5ydgrk4p5g/make-4.2.1.7z?dl=0
+        :: Download & extract GNU make + utils (for dmd-testsuite)
+        mkdir make
+        cd make
+        7z x ../make.7z > nul
+        mv make.exe gmake.exe
+        cd ..
+        :: Download & extract LDC-flavoured LLVM
+        curl -L -o llvm.7z https://github.com/ldc-developers/llvm/releases/download/ldc-v7.0.1/llvm-7.0.1-windows-x64-clang.7z
+        mkdir llvm
+        cd llvm
+        7z x ../llvm.7z > nul
+        cd ..
+        :: Download & install clang
+        curl -L -o clang.exe http://releases.llvm.org/7.0.1/LLVM-7.0.1-win64.exe
+        clang.exe /S
+        :: Set up environment variables
+        :: (LLVM bin dir required for lld-link.exe,
+        :: git's usr/bin/bash, unlike its bin/bash, leaves PATH as-is)
+        set PATH=%CD%\llvm\bin;C:\Program Files\LLVM\bin;%CD%\ninja;%CD%\make;%CD%\libcurl\ldc2;C:\Program Files\Git\usr\bin;%PATH%
+        call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+        set OS=win64
+        set MODEL=64
+        set DMD_TESTSUITE_MAKE_ARGS=-j2
+        echo on
+        cmake --version
+        ninja --version
+        clang-cl --version
+        gmake --version
+        bash --version
+        :: Build LDC & defaultlib unittest runners
+        mkdir build
+        cd build
+        cmake -G Ninja -DCMAKE_C_COMPILER:PATH=clang-cl.exe -DCMAKE_CXX_COMPILER:PATH=clang-cl.exe -DCMAKE_BUILD_TYPE=Release -DBUILD_LTO_LIBS=ON -DLLVM_ROOT_DIR=%CD%/../llvm -DD_COMPILER=%CD%/../ldc2-1.13.0-windows-x64/bin/ldmd2 ..
+        ninja -j2 all all-test-runners
+        bin\ldc2 --version
+        set TEST_EC=0
+        :: Build & run LDC D unittests
+        ctest --output-on-failure -R "ldc2-unittest" || set TEST_EC=1
+        :: Run LIT testsuite
+        ctest -V -R "lit-tests" || set TEST_EC=1
+        :: Run DMD testsuite
+        ctest -V -R "dmd-testsuite" || set TEST_EC=1
+        :: Run defaultlib unittests & druntime stand-alone tests
+        ctest -j2 --output-on-failure -E "dmd-testsuite|lit-tests|ldc2-unittest" || set TEST_EC=1
+        exit /b %TEST_EC%
+      displayName: 'Install prerequisites & blub'
