@@ -1,5 +1,8 @@
 steps:
-- script: git config --global core.autocrlf true
+- script: |
+    git config --global core.autocrlf true
+    set
+  displayName: Print environment variables
 - checkout: self
   submodules: true
 - script: |
@@ -73,7 +76,7 @@ steps:
     echo on
     mkdir build
     cd build
-    cmake -G Ninja -DCMAKE_C_COMPILER:PATH=clang-cl.exe -DCMAKE_CXX_COMPILER:PATH=clang-cl.exe -DCMAKE_BUILD_TYPE=Release %EXTRA_CMAKE_FLAGS% -DLLVM_ROOT_DIR=%CD%/../llvm -DD_COMPILER=%CD%/../bootstrap-ldc/bin/ldmd2 ..
+    cmake -G Ninja -DCMAKE_C_COMPILER:PATH=clang-cl.exe -DCMAKE_CXX_COMPILER:PATH=clang-cl.exe -DCMAKE_BUILD_TYPE=Release %EXTRA_CMAKE_FLAGS% -DCMAKE_INSTALL_PREFIX=%CD%/../install -DINCLUDE_INSTALL_DIR=%CD%/../install/import -DLLVM_ROOT_DIR=%CD%/../llvm -DD_COMPILER=%CD%/../bootstrap-ldc/bin/ldmd2 ..
     ninja -j2 all all-test-runners
     bin\ldc2 --version
   displayName: Build LDC & defaultlib unittest runners
@@ -107,3 +110,25 @@ steps:
     ctest -j2 --output-on-failure -E "dmd-testsuite|lit-tests|ldc2-unittest"
   displayName: Run defaultlib unittests & druntime stand-alone tests
   condition: succeededOrFailed()
+- script: |
+    set PATH=%CD%\ninja;%PATH%
+    cd build
+    ninja install > nul
+    :: (cat etc\ldc2.conf).replace("C:/projects/ldc2-$Env:APPVEYOR_JOB_ARCH/", '%%ldcbinarypath%%/../') | Set-Content etc\ldc2.conf
+    cd ..
+    cp LICENSE install
+    cp packaging/README.txt install
+    cp libcurl/ldc2/libcurl.dll install/bin
+    cp libcurl/ldc2/libcurl.dll install/lib
+    cp libcurl/ldc2/curl.lib install/lib
+    cp llvm/bin/lld-link.exe install/bin
+    :: Now rename the installation dir to test portability
+    mv install installed
+  displayName: Install LDC
+- script: |
+    7z a -mx=9 installed.7z installed > nul
+  displayName: Pack installation dir
+- task: PublishPipelineArtifact@0
+  inputs:
+    artifactName: 'ldc2.7z'
+    targetPath: 'installed.7z'
